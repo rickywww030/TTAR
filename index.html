@@ -3,318 +3,142 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>WebAR 圖像追蹤（上傳圖片 + 授權相機 + 疊方塊）</title>
+  <title>WebAR（MindAR 圖像追蹤）— 上傳 .mind 目標 + 疊方塊</title>
   <style>
     :root { color-scheme: light dark; }
-    body {
-      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", Arial, "Apple Color Emoji";
-      background: #0b0c10; color: #e8f0fe;
-    }
-    header, footer {
-      position: fixed; left: 0; right: 0; z-index: 10; padding: 10px 12px;
-      display: flex; gap: 12px; align-items: center; backdrop-filter: blur(8px);
-    }
-    header { top: 0; background: rgba(20,22,28,.55); }
-    footer { bottom: 0; background: rgba(20,22,28,.55); justify-content: space-between; }
-    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    label { font-size: 14px; opacity: .9; }
-    input[type="file"], input[type="number"] {
-      background: #11141a; color: #e8f0fe; border: 1px solid #2d3748; border-radius: 10px; padding: 8px 10px;
-    }
-    input[type="number"] { width: 7em; }
-    button {
-      appearance: none; border: 0; border-radius: 999px; padding: 10px 16px; font-weight: 600;
-      background: #4f46e5; color: white; cursor: pointer; box-shadow: 0 6px 18px rgba(79,70,229,.35);
-    }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    #status { font-size: 12px; opacity: .85; }
-    #hint { font-size: 12px; opacity: .75; }
-    canvas { display: block; width: 100vw; height: 100vh; }
-    .chip { font-size: 12px; padding: 4px 8px; border-radius: 999px; background:#1f2937; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", Arial; background:#0b0c10; color:#e8f0fe; }
+    header, footer { position:fixed; left:0; right:0; z-index:20; padding:10px 12px; display:flex; gap:12px; align-items:center; backdrop-filter: blur(8px); }
+    header { top:0; background:rgba(20,22,28,.55); }
+    footer { bottom:0; background:rgba(20,22,28,.55); justify-content:space-between; font-size:12px; }
+    .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    input[type="file"], input[type="number"] { background:#11141a; color:#e8f0fe; border:1px solid #2d3748; border-radius:10px; padding:8px 10px; }
+    button { border:0; border-radius:999px; padding:10px 16px; font-weight:600; background:#4f46e5; color:white; cursor:pointer; box-shadow:0 6px 18px rgba(79,70,229,.35); }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    #status { font-size:12px; opacity:.85; }
+    #ar-container { position:fixed; inset:0; }
   </style>
 
-  <!-- three.js ESM via import map -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.161.0/build/three.module.js"
-    }
-  }
-  </script>
+  <!-- Three.js + MindAR（UMD） -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.3/dist/mindar-image-three.prod.js"></script>
 </head>
 <body>
   <header>
     <div class="row" style="flex:1 1 auto;">
-      <strong>WebAR 圖像追蹤 Demo</strong>
-      <span class="chip" id="supportChip">檢查相容性中…</span>
+      <strong>MindAR 圖像追蹤 Demo</strong>
     </div>
     <div class="row">
-      <label>辨識圖：
-        <input id="imgInput" type="file" accept="image/*" />
+      <label>目標檔（.mind）：
+        <input id="mindFile" type="file" accept=".mind" />
       </label>
       <label>實際寬度（公分）：
-        <input id="imgWidth" type="number" value="15" min="1" step="1" />
+        <input id="widthCm" type="number" value="15" min="1" step="1" />
       </label>
-      <button id="permBtn">授權相機</button>
-      <button id="startBtn" disabled>開啟 AR 相機</button>
+      <button id="startBtn" disabled>開始 AR</button>
       <button id="endBtn" disabled>結束</button>
     </div>
   </header>
 
-  <canvas id="xr-canvas"></canvas>
+  <div id="ar-container"></div>
 
   <footer>
-    <div id="status">提示：請上傳高對比、具紋理的圖片；在 Android Chrome + HTTPS 下效果最佳。</div>
-    <div id="hint">若沒出現授權或 AR：確認 HTTPS 或 localhost、相機權限允許、Android Chrome 版本。</div>
+    <div id="status">提示：此版本不依賴 WebXR；Android 與 iOS Safari 皆可用。請先用工具把圖片編成 <code>.mind</code> 後上傳。</div>
+    <div>若看不到相機：請確認 HTTPS 或 localhost、允許相機權限。</div>
   </footer>
 
-  <script type="module">
-    import * as THREE from 'three';
-
-    // ===== DOM =====
-    const canvas = document.getElementById('xr-canvas');
-    const imgInput = document.getElementById('imgInput');
-    const imgWidthInput = document.getElementById('imgWidth');
+  <script>
+    const mindFile = document.getElementById('mindFile');
     const startBtn = document.getElementById('startBtn');
     const endBtn = document.getElementById('endBtn');
-    const permBtn = document.getElementById('permBtn');
+    const widthCm = document.getElementById('widthCm');
     const statusEl = document.getElementById('status');
-    const supportChip = document.getElementById('supportChip');
+    const container = document.getElementById('ar-container');
 
-    // ===== three.js =====
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: false });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true;
+    let mindarThree = null;
+    let started = false;
+    let objectURL = null;
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera();
-    scene.add(camera);
+    mindFile.addEventListener('change', () => {
+      if (objectURL) URL.revokeObjectURL(objectURL);
+      const file = mindFile.files?.[0];
+      if (!file) { startBtn.disabled = true; return; }
+      objectURL = URL.createObjectURL(file);
+      startBtn.disabled = false;
+      setStatus(`已載入目標檔：${file.name}。按「開始 AR」。`);
+    });
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x222244, 1.1));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.7);
-    dir.position.set(1, 2, 1);
-    scene.add(dir);
+    startBtn.addEventListener('click', async () => {
+      if (!objectURL) { setStatus('請先選擇 .mind 檔。'); return; }
+      if (started) return;
 
-    const imageObjects = new Map();
-
-    let xrSession = null;
-    let trackedBitmap = null;
-    let trackedWidthM = 0.15;
-    let trackedAspect = 1.0;
-
-    // ===== 相容性檢查 =====
-    (async () => {
-      if (!('xr' in navigator)) {
-        setChip('不支援 WebXR', '#7c2d12');
-        setStatus('此裝置或瀏覽器尚不支援 WebXR。建議 Android Chrome 測試。');
-        disableRun();
-        return;
-      }
-      const ok = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
-      if (ok) {
-        setChip('支援 WebXR AR', '#065f46');
-        setStatus('載入完成：請上傳辨識圖，設定寬度；可先按「授權相機」，再按「開啟 AR 相機」。');
-      } else {
-        setChip('不支援 AR Session', '#7c2d12');
-        setStatus('瀏覽器雖有 WebXR，未支援 immersive-ar。請用 Android Chrome 或更新系統。');
-        disableRun();
-      }
-    })();
-
-    // ===== 權限工具 =====
-    async function checkCameraPermission() {
-      if (!navigator.permissions?.query) return 'unknown';
       try {
-        const s = await navigator.permissions.query({ name: 'camera' });
-        return s.state; // 'granted' | 'denied' | 'prompt'
-      } catch { return 'unknown'; }
-    }
+        const widthM = Math.max(0.01, Math.min(5.0, (parseFloat(widthCm.value || '15')/100)));
+        // MindAR 初始化
+        mindarThree = new window.MINDAR.IMAGE.MindARThree({
+          container,
+          imageTargetSrc: objectURL,     // 你的 .mind 目標檔
+          uiLoading: "no", uiScanning: "no", uiError: "no" // 我們自己顯示訊息
+        });
 
-    async function requestCameraPermission() {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error('NO_GUM');
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      stream.getTracks().forEach(t => t.stop()); // 立刻關閉釋放
-    }
+        const {renderer, scene, camera} = mindarThree;
 
-    // ===== 事件：圖片上傳 =====
-    imgInput.addEventListener('change', async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try {
-        trackedBitmap = await createImageBitmap(file);
-        trackedAspect = trackedBitmap.height / trackedBitmap.width;
-        startBtn.disabled = false;
-        setStatus(`已載入辨識圖：${trackedBitmap.width}×${trackedBitmap.height} 像素。請設定實際寬度並開啟 AR。`);
-      } catch (err) {
-        console.error(err);
-        trackedBitmap = null;
+        // 燈光
+        const hemi = new THREE.HemisphereLight(0xffffff, 0x222244, 1.1);
+        scene.add(hemi);
+        const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+        dir.position.set(1, 2, 1);
+        scene.add(dir);
+
+        // Anchor 0（對應 .mind 檔的第一個目標）
+        const anchor = mindarThree.addAnchor(0);
+
+        // 疊加邊框（依實際寬度繪製一個矩形平面邊）
+        const frameW = widthM, frameH = widthM * 1.0; // 近似比例，MindAR 不用你填比例也可
+        const frameGeom = new THREE.PlaneGeometry(frameW, frameH);
+        const frameEdges = new THREE.EdgesGeometry(frameGeom);
+        const frame = new THREE.LineSegments(frameEdges, new THREE.LineBasicMaterial({transparent:true, opacity:0.75}));
+        frame.position.z = 0.001;
+        anchor.group.add(frame);
+
+        // 疊加方塊（邊長 = 寬度 30%）
+        const cubeSize = widthM * 0.3;
+        const cube = new THREE.Mesh(
+          new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize),
+          new THREE.MeshStandardMaterial({metalness:0.1, roughness:0.45})
+        );
+        cube.position.z = cubeSize/2;
+        anchor.group.add(cube);
+
+        await mindarThree.start(); // 取得相機，開始追蹤
+        started = true;
         startBtn.disabled = true;
-        setStatus('讀取圖片失敗，請重試或更換圖片。');
-      }
-    });
+        endBtn.disabled = false;
+        setStatus('AR 已啟動：將鏡頭對準你的目標圖片（與生成 .mind 的原圖一致）。');
 
-    // ===== 事件：授權相機（可選，但建議） =====
-    permBtn.addEventListener('click', async () => {
-      try {
-        const state = await checkCameraPermission();
-        if (state === 'granted') {
-          setStatus('相機權限已取得，可直接開啟 AR。');
-          return;
-        }
-        if (state === 'denied') {
-          setStatus('相機權限先前被拒。請到瀏覽器/系統設定→網站權限→相機→允許，然後重整。');
-          return;
-        }
-        await requestCameraPermission();
-        setStatus('相機權限已取得。');
+        renderer.setAnimationLoop(() => { renderer.render(scene, camera); });
       } catch (e) {
-        console.warn(e);
-        if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-          setStatus('授權失敗：需在 HTTPS 或 localhost 下才能請求相機權限。');
-        } else {
-          setStatus('授權失敗：請檢查瀏覽器相機權限設定。');
-        }
+        console.error(e);
+        setStatus('啟動失敗：' + (e?.message || e));
       }
     });
 
-// 取代原本的 startBtn 事件
-startBtn.addEventListener('click', async () => {
-  if (!trackedBitmap) { setStatus('請先上傳辨識圖。'); return; }
-
-  // 預檢相機權限
-  try {
-    const state = await checkCameraPermission();
-    if (state === 'denied') { setStatus('啟動失敗：相機權限被拒。請至瀏覽器/系統設定開啟。'); return; }
-    if (state !== 'granted') await requestCameraPermission();
-  } catch {}
-
-  // 先做「image-tracking 支援探測」：用一張 8x8 的暫存圖片開一次 session
-  async function probeImageTracking() {
-    const cnv = document.createElement('canvas');
-    cnv.width = cnv.height = 8;
-    const bmp = await createImageBitmap(cnv);
-    try {
-      const probe = await navigator.xr.requestSession('immersive-ar', {
-        requiredFeatures: ['local', 'image-tracking'],
-        trackedImages: [{ image: bmp, widthInMeters: 0.1 }]
-      });
-      await probe.end(); // 能開 → 代表 image-tracking 被啟用
-      return true;
-    } catch (e) {
-      if (e?.name === 'NotSupportedError') return false;
-      throw e; // 其他錯誤往外丟
-    }
-  }
-
-  let imageTrackingOK = true;
-  try { imageTrackingOK = await probeImageTracking(); }
-  catch (e) {
-    if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
-      setStatus('啟動失敗：未授權相機或非 HTTPS/localhost。'); return;
-    }
-    console.error(e);
-    setStatus('啟動 AR 失敗：' + (e?.message || e)); return;
-  }
-
-  if (!imageTrackingOK) {
-    setStatus('此裝置/Chrome 目前**未啟用 image-tracking**。請更新 Chrome 與「Google Play 服務 for AR」，' +
-              '並到 chrome://flags 開啟 WebXR Incubations 後重試。');
-    return;
-  }
-
-  // 真的開始：你上傳的圖片 + 實際寬度
-  const widthM = Math.max(0.01, Math.min(5.0, parseFloat(imgWidthInput.value || '15')/100));
-  try {
-    xrSession = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['local', 'image-tracking'],
-      optionalFeatures: ['dom-overlay'],
-      domOverlay: { root: document.body },
-      trackedImages: [{ image: trackedBitmap, widthInMeters: widthM }]
-    });
-  } catch (err) {
-    console.error(err);
-    setStatus('啟動 AR 失敗：' + (err?.message || err)); return;
-  }
-
-  await renderer.xr.setSession(xrSession);
-  if (!imageObjects.has(0)) {
-    const g = buildContentGroup(widthM, trackedBitmap.height / trackedBitmap.width);
-    imageObjects.set(0, g); scene.add(g);
-  }
-  xrSession.addEventListener('end', onSessionEnded);
-  window.addEventListener('resize', onResize);
-  startBtn.disabled = true; endBtn.disabled = false;
-  setStatus('AR 已啟動：將鏡頭對準你的辨識圖。');
-
-  renderer.setAnimationLoop((t, frame) => {
-    if (frame?.getImageTrackingResults) {
-      for (const r of frame.getImageTrackingResults()) {
-        const g = imageObjects.get(r.index);
-        const pose = frame.getPose(r.imageSpace, renderer.xr.getReferenceSpace());
-        if (g && pose) { g.visible = r.trackingState !== 'untracked'; g.matrix.fromArray(pose.transform.matrix); }
-        else if (g) g.visible = false;
-      }
-    }
-    renderer.render(scene, camera);
-  });
-});
-
-    // ===== 事件：結束 AR =====
     endBtn.addEventListener('click', async () => {
-      if (xrSession) await xrSession.end();
+      if (!mindarThree || !started) return;
+      await mindarThree.stop();
+      await mindarThree.renderer.dispose();
+      container.innerHTML = ''; // 清除 video/canvas
+      started = false;
+      startBtn.disabled = !objectURL;
+      endBtn.disabled = true;
+      setStatus('AR 已結束。可更換目標檔後再開啟。');
     });
 
-    function onSessionEnded() {
-      renderer.setAnimationLoop(null);
-      try { xrSession.removeEventListener('end', onSessionEnded); } catch {}
-      xrSession = null;
-      startBtn.disabled = !trackedBitmap;
-      endBtn.disabled = true;
-      setStatus('AR 已結束。你可以更換辨識圖後再次啟動。');
-    }
+    function setStatus(msg){ statusEl.textContent = msg; }
 
-    // ===== 3D 內容：圖片邊框 + 方塊 =====
-    function buildContentGroup(widthM, aspect) {
-      const group = new THREE.Group();
-      group.matrixAutoUpdate = false;
-      group.visible = false;
-
-      const heightM = widthM * aspect;
-      const plane = new THREE.PlaneGeometry(widthM, heightM);
-      const edges = new THREE.EdgesGeometry(plane);
-      const frame = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.75 }));
-      frame.position.z = 0.001;
-      group.add(frame);
-
-      const cubeSize = widthM * 0.3;
-      const cube = new THREE.Mesh(
-        new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize),
-        new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.45 })
-      );
-      cube.position.z = cubeSize / 2;
-      group.add(cube);
-
-      const axes = new THREE.AxesHelper(widthM * 0.6);
-      axes.position.z = 0.002;
-      axes.visible = false;
-      group.add(axes);
-
-      return group;
-    }
-
-    // ===== 工具 =====
-    function onResize() { renderer.setSize(window.innerWidth, window.innerHeight); }
-    function setStatus(msg) { statusEl.textContent = msg; }
-    function setChip(text, bg) { supportChip.textContent = text; supportChip.style.background = bg; }
-    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-    function disableRun() { startBtn.disabled = true; permBtn.disabled = true; }
-
-    // ===== HTTPS 提醒 =====
+    // HTTPS 檢查
     if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-      setStatus('建議用 HTTPS 或在本機 localhost 啟動伺服器，才能請求相機權限與啟動 AR。');
+      setStatus('請以 HTTPS 或 localhost 開啟，才能使用相機。');
     }
   </script>
 </body>
 </html>
-
