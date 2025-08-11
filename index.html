@@ -178,87 +178,87 @@
       }
     });
 
-    // ===== 事件：開始 AR =====
-    startBtn.addEventListener('click', async () => {
-      if (!trackedBitmap) { setStatus('請先上傳辨識圖。'); return; }
-      trackedWidthM = clamp(parseFloat(imgWidthInput.value || '15') / 100, 0.01, 5.0);
+// 取代原本的 startBtn 事件
+startBtn.addEventListener('click', async () => {
+  if (!trackedBitmap) { setStatus('請先上傳辨識圖。'); return; }
 
-      // 先預檢相機權限（確保有使用者手勢）
-      try {
-        const state = await checkCameraPermission();
-        if (state === 'denied') {
-          setStatus('啟動失敗：相機權限被拒。請到瀏覽器/系統設定開啟後再試。');
-          return;
-        }
-        if (state !== 'granted') {
-          await requestCameraPermission(); // 會跳原生授權一次
-        }
-      } catch {
-        // 某些瀏覽器缺 Permissions API，略過；WebXR 仍會再請權
-      }
+  // 預檢相機權限
+  try {
+    const state = await checkCameraPermission();
+    if (state === 'denied') { setStatus('啟動失敗：相機權限被拒。請至瀏覽器/系統設定開啟。'); return; }
+    if (state !== 'granted') await requestCameraPermission();
+  } catch {}
 
-      try {
-        const init = {
-          requiredFeatures: ['local'],
-          optionalFeatures: [
-            'dom-overlay',
-            // 有些實作仍需要宣告 image-tracking；放 optional 不會影響不支援者
-            'image-tracking'
-          ],
-          domOverlay: { root: document.body },
-          trackedImages: [{ image: trackedBitmap, widthInMeters: trackedWidthM }]
-        };
+  // 先做「image-tracking 支援探測」：用一張 8x8 的暫存圖片開一次 session
+  async function probeImageTracking() {
+    const cnv = document.createElement('canvas');
+    cnv.width = cnv.height = 8;
+    const bmp = await createImageBitmap(cnv);
+    try {
+      const probe = await navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['local', 'image-tracking'],
+        trackedImages: [{ image: bmp, widthInMeters: 0.1 }]
+      });
+      await probe.end(); // 能開 → 代表 image-tracking 被啟用
+      return true;
+    } catch (e) {
+      if (e?.name === 'NotSupportedError') return false;
+      throw e; // 其他錯誤往外丟
+    }
+  }
 
-        xrSession = await navigator.xr.requestSession('immersive-ar', init);
-        await renderer.xr.setSession(xrSession);
+  let imageTrackingOK = true;
+  try { imageTrackingOK = await probeImageTracking(); }
+  catch (e) {
+    if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
+      setStatus('啟動失敗：未授權相機或非 HTTPS/localhost。'); return;
+    }
+    console.error(e);
+    setStatus('啟動 AR 失敗：' + (e?.message || e)); return;
+  }
 
-        if (!imageObjects.has(0)) {
-          const content = buildContentGroup(trackedWidthM, trackedAspect);
-          imageObjects.set(0, content);
-          scene.add(content);
-        }
+  if (!imageTrackingOK) {
+    setStatus('此裝置/Chrome 目前**未啟用 image-tracking**。請更新 Chrome 與「Google Play 服務 for AR」，' +
+              '並到 chrome://flags 開啟 WebXR Incubations 後重試。');
+    return;
+  }
 
-        xrSession.addEventListener('end', onSessionEnded);
-        window.addEventListener('resize', onResize);
-
-        startBtn.disabled = true;
-        endBtn.disabled = false;
-        setStatus('AR 已啟動：將鏡頭對準你的辨識圖。');
-
-        renderer.setAnimationLoop((t, frame) => {
-          if (frame?.getImageTrackingResults) {
-            const results = frame.getImageTrackingResults();
-            for (const result of results) {
-              const index = result.index; // 0
-              const group = imageObjects.get(index);
-              if (!group) continue;
-
-              const pose = frame.getPose(result.imageSpace, renderer.xr.getReferenceSpace());
-              if (pose) {
-                group.visible = result.trackingState !== 'untracked';
-                group.matrix.fromArray(pose.transform.matrix);
-              } else {
-                group.visible = false;
-              }
-            }
-          }
-          renderer.render(scene, camera);
-        });
-
-      } catch (err) {
-        console.error(err);
-        if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
-          setStatus('啟動失敗：未授權相機或非 HTTPS/localhost。請確認權限與連線方式。');
-        } else if (err?.name === 'NotSupportedError') {
-          setStatus('啟動失敗：此裝置/瀏覽器尚未支援 WebXR AR 或 Image Tracking。');
-        } else {
-          setStatus('啟動 AR 失敗：' + (err?.message || err));
-        }
-        xrSession = null;
-        startBtn.disabled = !trackedBitmap;
-        endBtn.disabled = true;
-      }
+  // 真的開始：你上傳的圖片 + 實際寬度
+  const widthM = Math.max(0.01, Math.min(5.0, parseFloat(imgWidthInput.value || '15')/100));
+  try {
+    xrSession = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local', 'image-tracking'],
+      optionalFeatures: ['dom-overlay'],
+      domOverlay: { root: document.body },
+      trackedImages: [{ image: trackedBitmap, widthInMeters: widthM }]
     });
+  } catch (err) {
+    console.error(err);
+    setStatus('啟動 AR 失敗：' + (err?.message || err)); return;
+  }
+
+  await renderer.xr.setSession(xrSession);
+  if (!imageObjects.has(0)) {
+    const g = buildContentGroup(widthM, trackedBitmap.height / trackedBitmap.width);
+    imageObjects.set(0, g); scene.add(g);
+  }
+  xrSession.addEventListener('end', onSessionEnded);
+  window.addEventListener('resize', onResize);
+  startBtn.disabled = true; endBtn.disabled = false;
+  setStatus('AR 已啟動：將鏡頭對準你的辨識圖。');
+
+  renderer.setAnimationLoop((t, frame) => {
+    if (frame?.getImageTrackingResults) {
+      for (const r of frame.getImageTrackingResults()) {
+        const g = imageObjects.get(r.index);
+        const pose = frame.getPose(r.imageSpace, renderer.xr.getReferenceSpace());
+        if (g && pose) { g.visible = r.trackingState !== 'untracked'; g.matrix.fromArray(pose.transform.matrix); }
+        else if (g) g.visible = false;
+      }
+    }
+    renderer.render(scene, camera);
+  });
+});
 
     // ===== 事件：結束 AR =====
     endBtn.addEventListener('click', async () => {
@@ -317,3 +317,4 @@
   </script>
 </body>
 </html>
+
